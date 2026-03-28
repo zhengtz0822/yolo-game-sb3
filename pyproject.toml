@@ -1,0 +1,14 @@
+[project]
+name = "yolo-game-sb3"
+version = "0.1.0"
+description = "Contra RL training framework based on pure vision (YOLO + PPO)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "gym-retro>=0.8.0",
+    "stable-baselines3>=2.0.0",
+    "ultralytics>=8.0.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    "torch>=2.0.0",
+]
