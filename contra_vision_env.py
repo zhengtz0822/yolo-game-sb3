@@ -56,9 +56,11 @@ class RewardConfig:
 
     # === 进度奖励 ===
     # 向右移动奖励（鼓励探索）
-    move_right_bonus: float = 0.1
+    move_right_bonus: float = 0.5
     # 向左移动惩罚（防止来回移动）
-    move_left_penalty: float = -0.05
+    move_left_penalty: float = -0.2
+    # 原地不动惩罚（防止发呆）
+    no_move_penalty: float = -0.01
 
     # === 检测阈值 ===
     # IoU 阈值，用于判断对象消失
@@ -103,6 +105,8 @@ class ContraVisionEnv(gym.Env):
         lives_pixel_thresholds: Optional[List[float]] = None,
         # 游戏状态区域（用于判断游戏是否结束）
         game_over_roi: Tuple[int, int, int, int] = (100, 100, 120, 30),
+        # 渲染模式
+        render_mode: str = "rgb_array",
     ):
         """
         初始化环境
@@ -125,7 +129,7 @@ class ContraVisionEnv(gym.Env):
             state="Level1",
             inttype=retro.data.Integrations.ALL,  # 包含 experimental 游戏
             use_restricted_actions=retro.Actions.DISCRETE,  # 使用离散动作空间
-            render_mode="rgb_array",  # 返回 RGB 数组，可用于显示
+            render_mode=render_mode,  # 渲染模式，"human" 直接显示窗口，"rgb_array" 返回数组
         )
 
         # 复制 retro 环境的观察和动作空间
@@ -156,7 +160,7 @@ class ContraVisionEnv(gym.Env):
         if lives_template_path is not None:
             self.lives_template = cv2.imread(lives_template_path, cv2.IMREAD_GRAYSCALE)
             if self.lives_template is None:
-                raise ValueError(f"无法加载命数模板图片: {lives_template_path}")
+                print(f"警告: 无法加载命数模板图片: {lives_template_path}，将使用像素统计法识别命数")
 
         # 奖励配置
         self.reward_config = reward_config or RewardConfig()
@@ -436,6 +440,7 @@ class ContraVisionEnv(gym.Env):
             "pickup_item": 0,
             "move_right": 0,
             "move_left": 0,
+            "no_move": 0,
         }
 
         config = self.reward_config
@@ -450,20 +455,23 @@ class ContraVisionEnv(gym.Env):
             # 计算移动距离
             x_movement = curr_player_x - self.prev_player_x
 
-            if x_movement > 2:  # 向右移动
-                # 根据移动距离给予奖励
-                move_reward = config.move_right_bonus * (x_movement / 10)
-                reward += move_reward
-                reward_details["move_right"] = x_movement
-
-                # 更新最大 x 坐标
+            if x_movement > 1:  # 向右移动（阈值从>2降至>1，对小幅前进更敏感）
+                # 直接给固定奖励，再加距离奖励
+                reward += config.move_right_bonus
+                reward_details["move_right"] = 1
+                # 更新最大 x 坐标，并给予到达新位置的额外进度奖励
                 if curr_player_x > self.max_player_x:
+                    # 到达历史最远位置，额外奖励0.5，鼓励持续探索新区域
+                    reward += 0.5
                     self.max_player_x = curr_player_x
 
-            elif x_movement < -2:  # 向左移动（惩罚）
-                move_penalty = config.move_left_penalty * (abs(x_movement) / 10)
-                reward += move_penalty
-                reward_details["move_left"] = abs(x_movement)
+            elif x_movement < -1:  # 向左移动（阈值从<-2调整为<-1，与右移阈值对称）
+                reward += config.move_left_penalty
+                reward_details["move_left"] = 1
+
+            else:  # 原地不动或小幅度移动（惩罚）
+                reward += config.no_move_penalty
+                reward_details["no_move"] = 1
 
             self.prev_player_x = curr_player_x
 

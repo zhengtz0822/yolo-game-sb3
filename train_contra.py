@@ -4,11 +4,13 @@
 """
 
 import os
+import time
 from typing import Callable
 
 import stable_retro as retro
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
+    BaseCallback,
     CallbackList,
     CheckpointCallback,
     EvalCallback,
@@ -16,6 +18,7 @@ from stable_baselines3.common.callbacks import (
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import (
+    DummyVecEnv,
     SubprocVecEnv,
     VecFrameStack,
     VecNormalize,
@@ -63,11 +66,12 @@ REWARD_CONFIG = RewardConfig(
     # 命数变化奖励
     lives_decrease=-1.0,   # 命数减少（死亡）
     lives_increase=0.5,    # 命数增加（加命）
-    survival_bonus=0.001,  # 生存鼓励（每步）
+    survival_bonus=0.01,   # 生存鼓励（每步）↑ 从0.001提升，加强存活激励
 
     # 进度奖励
-    move_right_bonus=0.1,  # 向右移动奖励（增大！鼓励探索）
-    move_left_penalty=-0.05,  # 向左移动惩罚（防止来回移动）
+    move_right_bonus=2.0,   # 向右移动奖励 ↑ 从0.5提升至2.0，使其与击杀敌人奖励相当，强制驱动前进
+    move_left_penalty=-0.5, # 向左移动惩罚 ↑ 从-0.2加强至-0.5，遏制向左回退行为
+    no_move_penalty=-0.15,  # 原地不动惩罚 ↑ 从-0.01提高15倍，杜绝原地徘徊
 
     # 检测阈值
     iou_threshold=0.3,           # IoU阈值（判断对象消失）
@@ -79,16 +83,22 @@ N_ENVS = 4
 
 # PPO 超参数
 LEARNING_RATE = 2.5e-4
-N_STEPS = 128
-BATCH_SIZE = 256
+N_STEPS = 256        # ↑ 从128增加至256，收集更长经验序列，减少梯度噪声
+BATCH_SIZE = 256     # 保持256，N_STEPS*N_ENVS=1024，256可整除
 N_EPOCHS = 4
-ENT_COEF = 0.01
-GAMMA = 0.99
+ENT_COEF = 0.005     # ↓ 从0.01降低，减少过度随机探索，让策略更稳定地向右前进
+GAMMA = 0.98         # ↓ 从0.99降低，更重视近期奖励，加快对向右移动信号的响应
 GAE_LAMBDA = 0.95
 CLIP_RANGE = 0.2
 
-# 训练参数
-TOTAL_TIMESTEPS = 10_000_000  # 总训练步数
+# ==================== 调试/正式训练模式 ====================
+DEBUG_MODE = False  # True: 本地调试模式（可视化、快速验证）  False: 正式训练模式（高性能、长时间）
+
+# 训练参数（根据模式自动调整）
+TOTAL_TIMESTEPS = 500_000 if DEBUG_MODE else 10_000_000   # 调试: 50万步  正式: 1000万步
+RENDER_ENABLED = DEBUG_MODE  # 是否启用实时渲染回调
+RENDER_FREQ = 2000           # 渲染回调频率（仅 DEBUG_MODE 生效）
+RENDER_STEPS = 300           # 每次渲染步数（仅 DEBUG_MODE 生效）
 
 # 保存路径
 LOG_DIR = "logs/contra_ppo"
@@ -96,7 +106,7 @@ MODEL_SAVE_DIR = "models/contra_ppo"
 TENSORBOARD_LOG = "logs/tensorboard/contra_ppo"
 
 # 回调参数
-EVAL_FREQ = 50_000  # 评估频率
+EVAL_FREQ = 10_000 if DEBUG_MODE else 50_000  # 评估频率  调试: 1万步  正式: 5万步
 N_EVAL_EPISODES = 5  # 每次评估的回合数
 CHECKPOINT_FREQ = 100_000  # 检查点保存频率
 
@@ -112,6 +122,7 @@ def make_env(
     game_over_roi: tuple = (100, 100, 120, 30),
     rank: int = 0,
     seed: int = 0,
+    render_mode: str = "rgb_array",
 ) -> Callable:
     """
     创建环境的工厂函数
@@ -125,6 +136,7 @@ def make_env(
         game_over_roi: 游戏结束检测区域
         rank: 环境序号（用于多进程）
         seed: 随机种子
+        render_mode: 渲染模式，"rgb_array" 或 "human"
 
     Returns:
         环境创建函数
@@ -139,6 +151,7 @@ def make_env(
             frame_stack=frame_stack,  # 内部不堆叠，由 VecFrameStack 处理
             lives_roi=lives_roi,
             game_over_roi=game_over_roi,
+            render_mode=render_mode,
         )
 
         # 包装 Monitor 以记录统计信息
@@ -150,6 +163,31 @@ def make_env(
         return env
 
     return _init
+
+
+# ==================== 实时渲染回调 ====================
+
+
+class RenderCallback(BaseCallback):
+    """训练过程中定期渲染游戏画面的回调"""
+
+    def __init__(self, render_env, render_freq=5000, n_render_steps=200, verbose=0):
+        super().__init__(verbose)
+        self.render_env = render_env
+        self.render_freq = render_freq
+        self.n_render_steps = n_render_steps
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.render_freq == 0:
+            obs = self.render_env.reset()
+            for _ in range(self.n_render_steps):
+                action, _ = self.model.predict(obs, deterministic=True)
+                obs, reward, done, info = self.render_env.step(action)
+                self.render_env.render()
+                time.sleep(1 / 30)  # ~30fps
+                if done.any():
+                    obs = self.render_env.reset()
+        return True
 
 
 # ==================== 主训练函数 ====================
@@ -178,6 +216,7 @@ def main():
     os.makedirs(TENSORBOARD_LOG, exist_ok=True)
 
     print(f"\n配置信息:")
+    print(f"  - 训练模式: {'🔧 调试模式' if DEBUG_MODE else '🚀 正式训练'}")
     print(f"  - YOLO 模型: {YOLO_MODEL_PATH}")
     print(f"  - 命数模板: {LIVES_TEMPLATE_PATH}")
     print(f"  - 并行环境数: {N_ENVS}")
@@ -218,7 +257,7 @@ def main():
     # 这有助于训练稳定性
     env = VecNormalize(
         env,
-        norm_obs=True,  # 归一化观察
+        norm_obs=False,  # 图像观察不做归一化（CnnPolicy 要求 uint8 图像）
         norm_reward=True,  # 归一化奖励
         clip_obs=10.0,  # 观察裁剪范围
         clip_reward=10.0,  # 奖励裁剪范围
@@ -243,7 +282,7 @@ def main():
         clip_range=CLIP_RANGE,
         verbose=1,
         tensorboard_log=TENSORBOARD_LOG,
-        device="auto",  # 自动选择设备（优先使用 GPU）
+        device="mps",  # 自动选择设备（优先使用 GPU）
     )
 
     print(f"模型架构:")
@@ -253,7 +292,7 @@ def main():
     callbacks = []
 
     # 1. 评估回调 - 定期评估并保存最佳模型
-    eval_env = SubprocVecEnv(
+    eval_env = DummyVecEnv(
         [
             make_env(
                 yolo_model_path=YOLO_MODEL_PATH,
@@ -264,13 +303,14 @@ def main():
                 game_over_roi=GAME_OVER_ROI,
                 rank=0,
                 seed=100,
+                render_mode="human",
             )
         ]
     )
     eval_env = VecFrameStack(eval_env, n_stack=FRAME_STACK, channels_order="first")
     eval_env = VecNormalize(
         eval_env,
-        norm_obs=True,
+        norm_obs=False,  # 图像观察不做归一化
         norm_reward=True,
         clip_obs=10.0,
         clip_reward=10.0,
@@ -284,7 +324,7 @@ def main():
         eval_freq=EVAL_FREQ,
         n_eval_episodes=N_EVAL_EPISODES,
         deterministic=True,
-        render=False,
+        render=DEBUG_MODE,  # 调试模式下评估时渲染画面
         verbose=1,
     )
     callbacks.append(eval_callback)
@@ -299,6 +339,11 @@ def main():
         verbose=1,
     )
     callbacks.append(checkpoint_callback)
+
+    # 3. 实时渲染回调（复用 eval_env，避免同进程多模拟器实例冲突）
+    if RENDER_ENABLED:
+        render_callback = RenderCallback(eval_env, render_freq=RENDER_FREQ, n_render_steps=RENDER_STEPS)
+        callbacks.append(render_callback)
 
     # 合并回调
     callback = CallbackList(callbacks)
