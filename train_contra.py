@@ -282,7 +282,7 @@ def main():
         clip_range=CLIP_RANGE,
         verbose=1,
         tensorboard_log=TENSORBOARD_LOG,
-        device="mps",  # 自动选择设备（优先使用 GPU）
+        device="cuda",  # 自动选择设备（优先使用 GPU）
     )
 
     print(f"模型架构:")
