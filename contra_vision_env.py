@@ -231,6 +231,9 @@ class ContraVisionEnv(gym.Env):
         self.total_kills = 0  # 累计击杀数
         self.prev_player_x = 0  # 上一帧玩家 x 坐标
         self.max_player_x = 0  # 最大 x 坐标（用于防止刷分）
+        self.current_step = 0  # 当前 episode 步数
+        self.max_episode_steps = 4000  # 单 episode 最大步数，防止评估卡死
+        self.detect_interval = 3  # 每 N 帧检测一次 YOLO，中间帧复用上次结果
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -695,6 +698,11 @@ class ContraVisionEnv(gym.Env):
         obs_raw, retro_reward, terminated, truncated, info = self.retro_env.step(
             action
         )
+        self.current_step += 1
+
+        # 超过最大步数则截断 episode
+        if self.current_step >= self.max_episode_steps:
+            truncated = True
 
         # 预处理当前帧
         obs_processed = self._preprocess_frame(obs_raw)
@@ -702,8 +710,11 @@ class ContraVisionEnv(gym.Env):
         # 更新帧堆叠
         stacked_obs = self._stack_frames(obs_processed)
 
-        # 检测当前帧所有对象
-        curr_objects = self._detect_objects(obs_raw)
+        # 检测当前帧所有对象（每 detect_interval 帧检测一次，中间帧复用）
+        if self.current_step % self.detect_interval == 0:
+            curr_objects = self._detect_objects(obs_raw)
+        else:
+            curr_objects = self.prev_objects  # 复用上次检测结果
 
         # 计算对象相关奖励
         object_reward, reward_details = self._compute_rewards_from_objects(

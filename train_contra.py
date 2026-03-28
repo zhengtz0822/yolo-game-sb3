@@ -106,8 +106,8 @@ MODEL_SAVE_DIR = "models/contra_ppo"
 TENSORBOARD_LOG = "logs/tensorboard/contra_ppo"
 
 # 回调参数
-EVAL_FREQ = 10_000 if DEBUG_MODE else 50_000  # 评估频率  调试: 1万步  正式: 5万步
-N_EVAL_EPISODES = 5  # 每次评估的回合数
+EVAL_FREQ = 10_000 if DEBUG_MODE else 100_000  # 评估频率  调试: 1万步  正式: 10万步
+N_EVAL_EPISODES = 3 if DEBUG_MODE else 2  # 每次评估的回合数
 CHECKPOINT_FREQ = 100_000  # 检查点保存频率
 
 # ==================== 环境工厂函数 ====================
@@ -303,7 +303,7 @@ def main():
                 game_over_roi=GAME_OVER_ROI,
                 rank=0,
                 seed=100,
-                render_mode="human",
+                render_mode="human" if DEBUG_MODE else "rgb_array",
             )
         ]
     )
