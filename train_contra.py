@@ -60,7 +60,7 @@ CLIP_RANGE = 0.2
 DEBUG_MODE = True  # True: 本地调试模式（可视化、快速验证）  False: 正式训练模式（高性能、长时间）
 
 # 训练参数（根据模式自动调整）
-TOTAL_TIMESTEPS = 300_000 if DEBUG_MODE else 10_000_000   # 调试: 50万步  正式: 1000万步
+TOTAL_TIMESTEPS = 500_000 if DEBUG_MODE else 10_000_000   # 调试: 50万步  正式: 1000万步
 RENDER_ENABLED = DEBUG_MODE  # 是否启用实时渲染回调
 RENDER_FREQ = 2000           # 渲染回调频率（仅 DEBUG_MODE 生效）
 RENDER_STEPS = 300           # 每次渲染步数（仅 DEBUG_MODE 生效）
