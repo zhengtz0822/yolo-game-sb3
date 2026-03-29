@@ -4,24 +4,9 @@
 
 import os
 import time
-import cv2
-import numpy as np
-from contra_vision_env import ContraVisionEnv, RewardConfig
+from contra_vision_env import ContraEnv
 
 os.environ['SDL_VIDEODRIVER'] = 'dummy'
-
-# 颜色配置
-COLORS = {
-    "player": (255, 255, 255),
-    "mob": (0, 0, 255),
-    "turret": (0, 165, 255),
-    "ebullet": (0, 255, 255),
-    "pit": (255, 0, 0),
-    "water": (255, 0, 255),
-    "item": (0, 255, 0),
-    "boss-1": (0, 0, 128),
-    "boss-1_weakness": (255, 255, 0),
-}
 
 # 动作映射 (Contra-Nes Discrete 36)
 # Action 2: RIGHT (向右走)
@@ -32,20 +17,19 @@ COLORS = {
 
 RIGHT_ACTIONS = [2, 3, 10, 11, 18, 19]  # 向右移动的动作
 
+
 def main():
     print("=" * 60)
     print("测试向右移动策略")
     print("=" * 60)
 
-    env = ContraVisionEnv(
-        yolo_model_path='models/yolo-0327.pt',
-        frame_stack=1,
-    )
+    env = ContraEnv(frame_stack=1)
 
     print(f"\n向右动作: {RIGHT_ACTIONS}")
     print("这些动作包含 RIGHT 按钮\n")
 
     obs, info = env.reset()
+    prev_xscroll = info.get('xscroll', 0)
 
     total_reward = 0
     right_count = 0
@@ -58,27 +42,32 @@ def main():
         obs, reward, done, truncated, info = env.step(action)
         total_reward += reward
 
-        reward_details = info.get('reward_details', {})
-        if reward_details.get('move_right', 0) > 0:
+        # 通过 xscroll 增加判断是否向右移动
+        curr_xscroll = info.get('xscroll', 0)
+        if curr_xscroll > prev_xscroll:
             right_count += 1
+        prev_xscroll = curr_xscroll
 
         if i % 20 == 0:
-            player_x = env.prev_player_x
-            print(f"Step {i}: X={player_x:.0f}, reward={total_reward:.2f}")
+            print(f"Step {i}: xscroll={curr_xscroll}, reward={total_reward:.2f}, "
+                  f"details={info.get('reward_details', {})}")
 
         if done or truncated:
             print(f"\n游戏结束于 Step {i}")
             break
 
+    final_xscroll = info.get('xscroll', 0)
     print(f"\n结果:")
-    print(f"  向右移动次数: {right_count}")
-    print(f"  最终 X 坐标: {env.prev_player_x:.0f}")
+    print(f"  xscroll 增加次数（向右移动）: {right_count}")
+    print(f"  最终 xscroll: {final_xscroll}")
+    print(f"  最远 xscroll: {info.get('max_xscroll', 0)}")
     print(f"  总奖励: {total_reward:.2f}")
 
     try:
         env.close()
-    except:
+    except Exception:
         pass
+
 
 if __name__ == "__main__":
     main()

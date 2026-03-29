@@ -24,21 +24,9 @@ from stable_baselines3.common.vec_env import (
     VecNormalize,
 )
 
-from contra_vision_env import ContraVisionEnv, RewardConfig
+from contra_vision_env import ContraEnv, RewardConfig
 
 # ==================== 配置参数 ====================
-
-# YOLO 模型路径（预训练的敌人检测模型）
-YOLO_MODEL_PATH = "models/yolo-0327.pt"
-
-# 命数模板图片路径（可选，用于模板匹配法识别命数）
-LIVES_TEMPLATE_PATH = "assets/lives_template.png"  # 设为 None 则使用像素统计法
-
-# 命数识别区域 (x, y, w, h) - 左上角区域
-LIVES_ROI = (10, 20, 50, 40)
-
-# 游戏状态检测区域
-GAME_OVER_ROI = (100, 100, 120, 30)
 
 # 环境参数
 FRAME_STACK = 4  # 帧堆叠数量
@@ -46,36 +34,13 @@ FRAME_STACK = 4  # 帧堆叠数量
 # ==================== 奖励配置 ====================
 # 可根据训练效果调整各项奖励值
 REWARD_CONFIG = RewardConfig(
-    # 敌人击杀奖励
-    kill_mob=1.0,          # 击杀普通敌人
-    kill_turret=1.5,       # 击杀炮台
-    hit_boss_weakness=5.0, # 击中Boss弱点
-    kill_boss=10.0,        # 击杀Boss
-
-    # 躲避/受伤奖励
-    dodge_bullet=0.3,      # 成功躲避子弹
-    hit_by_bullet=-0.5,    # 被子弹击中
-
-    # 危险区域奖励
-    fall_into_pit=-1.0,    # 掉入坑洞
-    enter_water=-0.3,      # 进入水区域
-
-    # 道具奖励
-    pickup_item=2.0,       # 拾取道具
-
-    # 命数变化奖励
-    lives_decrease=-1.0,   # 命数减少（死亡）
-    lives_increase=0.5,    # 命数增加（加命）
-    survival_bonus=0.01,   # 生存鼓励（每步）↑ 从0.001提升，加强存活激励
-
-    # 进度奖励
-    move_right_bonus=2.0,   # 向右移动奖励 ↑ 从0.5提升至2.0，使其与击杀敌人奖励相当，强制驱动前进
-    move_left_penalty=-0.5, # 向左移动惩罚 ↑ 从-0.2加强至-0.5，遏制向左回退行为
-    no_move_penalty=-0.15,  # 原地不动惩罚 ↑ 从-0.01提高15倍，杜绝原地徘徊
-
-    # 检测阈值
-    iou_threshold=0.3,           # IoU阈值（判断对象消失）
-    pixel_change_threshold=30.0, # 像素变化阈值（确认击杀）
+    progress_coef=1.0,
+    progress_penalty=-0.3,
+    no_progress_penalty=-0.1,
+    new_max_bonus=0.5,
+    score_coef=0.1,
+    death_penalty=-2.0,
+    survival_bonus=0.005,
 )
 
 # 并行环境数量
@@ -86,16 +51,16 @@ LEARNING_RATE = 2.5e-4
 N_STEPS = 256        # ↑ 从128增加至256，收集更长经验序列，减少梯度噪声
 BATCH_SIZE = 256     # 保持256，N_STEPS*N_ENVS=1024，256可整除
 N_EPOCHS = 4
-ENT_COEF = 0.005     # ↓ 从0.01降低，减少过度随机探索，让策略更稳定地向右前进
+ENT_COEF = 0.02      # 适当提高探索力度，帮助发现跳跃等关键动作
 GAMMA = 0.98         # ↓ 从0.99降低，更重视近期奖励，加快对向右移动信号的响应
 GAE_LAMBDA = 0.95
 CLIP_RANGE = 0.2
 
 # ==================== 调试/正式训练模式 ====================
-DEBUG_MODE = False  # True: 本地调试模式（可视化、快速验证）  False: 正式训练模式（高性能、长时间）
+DEBUG_MODE = True  # True: 本地调试模式（可视化、快速验证）  False: 正式训练模式（高性能、长时间）
 
 # 训练参数（根据模式自动调整）
-TOTAL_TIMESTEPS = 500_000 if DEBUG_MODE else 10_000_000   # 调试: 50万步  正式: 1000万步
+TOTAL_TIMESTEPS = 300_000 if DEBUG_MODE else 10_000_000   # 调试: 50万步  正式: 1000万步
 RENDER_ENABLED = DEBUG_MODE  # 是否启用实时渲染回调
 RENDER_FREQ = 2000           # 渲染回调频率（仅 DEBUG_MODE 生效）
 RENDER_STEPS = 300           # 每次渲染步数（仅 DEBUG_MODE 生效）
@@ -114,12 +79,8 @@ CHECKPOINT_FREQ = 100_000  # 检查点保存频率
 
 
 def make_env(
-    yolo_model_path: str,
-    lives_template_path: str = None,
     reward_config: RewardConfig = None,
     frame_stack: int = 1,  # 设为1，使用 VecFrameStack 进行堆叠
-    lives_roi: tuple = (10, 20, 50, 40),
-    game_over_roi: tuple = (100, 100, 120, 30),
     rank: int = 0,
     seed: int = 0,
     render_mode: str = "rgb_array",
@@ -128,12 +89,8 @@ def make_env(
     创建环境的工厂函数
 
     Args:
-        yolo_model_path: YOLO 模型路径
-        lives_template_path: 命数模板路径
         reward_config: 奖励配置
         frame_stack: 帧堆叠数（内部使用）
-        lives_roi: 命数识别区域
-        game_over_roi: 游戏结束检测区域
         rank: 环境序号（用于多进程）
         seed: 随机种子
         render_mode: 渲染模式，"rgb_array" 或 "human"
@@ -143,14 +100,10 @@ def make_env(
     """
 
     def _init():
-        # 创建 ContraVisionEnv 实例
-        env = ContraVisionEnv(
-            yolo_model_path=yolo_model_path,
-            lives_template_path=lives_template_path,
-            reward_config=reward_config,
+        # 创建 ContraEnv 实例
+        env = ContraEnv(
             frame_stack=frame_stack,  # 内部不堆叠，由 VecFrameStack 处理
-            lives_roi=lives_roi,
-            game_over_roi=game_over_roi,
+            reward_config=reward_config,
             render_mode=render_mode,
         )
 
@@ -199,17 +152,6 @@ def main():
     print("魂斗罗强化学习训练")
     print("=" * 60)
 
-    # 检查 YOLO 模型是否存在
-    if not os.path.exists(YOLO_MODEL_PATH):
-        print(f"错误: YOLO 模型文件不存在: {YOLO_MODEL_PATH}")
-        print("请确保已训练好 YOLO 模型并指定正确路径")
-        return
-
-    # 检查命数模板（如果指定）
-    if LIVES_TEMPLATE_PATH and not os.path.exists(LIVES_TEMPLATE_PATH):
-        print(f"警告: 命数模板文件不存在: {LIVES_TEMPLATE_PATH}")
-        print("将使用像素统计法识别命数")
-
     # 创建保存目录
     os.makedirs(LOG_DIR, exist_ok=True)
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
@@ -217,31 +159,27 @@ def main():
 
     print(f"\n配置信息:")
     print(f"  - 训练模式: {'🔧 调试模式' if DEBUG_MODE else '🚀 正式训练'}")
-    print(f"  - YOLO 模型: {YOLO_MODEL_PATH}")
-    print(f"  - 命数模板: {LIVES_TEMPLATE_PATH}")
+    print(f"  - 奖励模式: RAM 变量驱动")
     print(f"  - 并行环境数: {N_ENVS}")
     print(f"  - 总训练步数: {TOTAL_TIMESTEPS:,}")
     print(f"  - 学习率: {LEARNING_RATE}")
     print(f"  - 帧堆叠数: {FRAME_STACK}")
     print(f"\n奖励配置:")
-    print(f"  - 击杀敌人(mob): {REWARD_CONFIG.kill_mob}")
-    print(f"  - 击杀炮台(turret): {REWARD_CONFIG.kill_turret}")
-    print(f"  - 击中Boss弱点: {REWARD_CONFIG.hit_boss_weakness}")
-    print(f"  - 击杀Boss: {REWARD_CONFIG.kill_boss}")
-    print(f"  - 躲避子弹: {REWARD_CONFIG.dodge_bullet}")
-    print(f"  - 拾取道具: {REWARD_CONFIG.pickup_item}")
+    print(f"  - 进度系数: {REWARD_CONFIG.progress_coef}")
+    print(f"  - 后退惩罚: {REWARD_CONFIG.progress_penalty}")
+    print(f"  - 原地惩罚: {REWARD_CONFIG.no_progress_penalty}")
+    print(f"  - 新最远奖励: {REWARD_CONFIG.new_max_bonus}")
+    print(f"  - 分数系数: {REWARD_CONFIG.score_coef}")
+    print(f"  - 死亡惩罚: {REWARD_CONFIG.death_penalty}")
+    print(f"  - 生存奖励: {REWARD_CONFIG.survival_bonus}")
 
     # 创建并行环境
     print("\n创建并行环境...")
     env = SubprocVecEnv(
         [
             make_env(
-                yolo_model_path=YOLO_MODEL_PATH,
-                lives_template_path=LIVES_TEMPLATE_PATH,
                 reward_config=REWARD_CONFIG,
                 frame_stack=1,  # 环境内部不堆叠
-                lives_roi=LIVES_ROI,
-                game_over_roi=GAME_OVER_ROI,
                 rank=i,
                 seed=42,
             )
@@ -282,7 +220,7 @@ def main():
         clip_range=CLIP_RANGE,
         verbose=1,
         tensorboard_log=TENSORBOARD_LOG,
-        device="cuda",  # 自动选择设备（优先使用 GPU）
+        device="mps",  # 自动选择设备（优先使用 GPU）
     )
 
     print(f"模型架构:")
@@ -295,12 +233,8 @@ def main():
     eval_env = DummyVecEnv(
         [
             make_env(
-                yolo_model_path=YOLO_MODEL_PATH,
-                lives_template_path=LIVES_TEMPLATE_PATH,
                 reward_config=REWARD_CONFIG,
                 frame_stack=1,
-                lives_roi=LIVES_ROI,
-                game_over_roi=GAME_OVER_ROI,
                 rank=0,
                 seed=100,
                 render_mode="human" if DEBUG_MODE else "rgb_array",
@@ -390,13 +324,9 @@ def load_and_test(model_path: str, vec_normalize_path: str):
     print(f"加载模型: {model_path}")
 
     # 创建测试环境
-    env = ContraVisionEnv(
-        yolo_model_path=YOLO_MODEL_PATH,
-        lives_template_path=LIVES_TEMPLATE_PATH,
+    env = ContraEnv(
         reward_config=REWARD_CONFIG,
         frame_stack=1,
-        lives_roi=LIVES_ROI,
-        game_over_roi=GAME_OVER_ROI,
     )
     env = Monitor(env)
     env = VecFrameStack(env, n_stack=FRAME_STACK, channels_order="first")

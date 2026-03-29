@@ -1,86 +1,69 @@
 """
 测试脚本 - 显示 Contra 游戏画面
-运行此脚本可以看到实际的游戏画面和 YOLO 检测结果
+运行此脚本可以看到实际的游戏画面和 RAM 变量信息
+支持加载训练好的模型进行推理，或使用随机动作演示
 """
 
 import os
 import time
 import cv2
 import numpy as np
-from contra_vision_env import ContraVisionEnv, RewardConfig
+from stable_baselines3 import PPO
+from contra_vision_env import ContraEnv, RewardConfig
 
 # 配置
-YOLO_MODEL_PATH = "models/yolo-0327.pt"
 DISPLAY_SCALE = 2  # 画面放大倍数
 
-# 颜色配置 (BGR)
-COLORS = {
-    "player": (255, 255, 255),  # 白色
-    "mob": (0, 0, 255),        # 红色
-    "turret": (0, 165, 255),   # 橙色
-    "ebullet": (0, 255, 255),  # 黄色
-    "pit": (255, 0, 0),        # 蓝色
-    "water": (255, 0, 255),    # 紫色
-    "bridge": (128, 128, 128), # 灰色
-    "item": (0, 255, 0),       # 绿色
-    "boss-1": (0, 0, 128),     # 深红
-    "boss-1_weakness": (255, 255, 0),  # 青色
-}
+# 模型路径配置
+MODEL_PATH = "models/contra_ppo/best_model/best_model.zip"  # 优先加载最佳模型
+FALLBACK_MODEL_PATH = "models/contra_ppo/final_model.zip"  # 备用：最终模型
 
-def draw_detections(frame, objects, class_ids):
-    """在画面上绘制检测结果"""
-    total_objects = 0
-    for class_name, boxes in objects.items():
-        color = COLORS.get(class_name, (255, 255, 255))
 
-        for box in boxes:
-            x1, y1, x2, y2 = box
-            # 绘制边界框（更粗的线条）
-            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, 3)
-            # 绘制标签（更大字体）
-            label = class_name
-            cv2.putText(frame, label, (int(x1), int(y1) - 8),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            total_objects += 1
+def load_model():
+    """尝试加载训练好的模型，失败则返回 None"""
+    if os.path.exists(MODEL_PATH):
+        model = PPO.load(MODEL_PATH)
+        print(f"已加载模型: {MODEL_PATH}")
+        return model
+    elif FALLBACK_MODEL_PATH and os.path.exists(FALLBACK_MODEL_PATH):
+        model = PPO.load(FALLBACK_MODEL_PATH)
+        print(f"已加载备用模型: {FALLBACK_MODEL_PATH}")
+        return model
+    else:
+        print("未找到模型文件，使用随机动作")
+        return None
 
-    return frame, total_objects
-
-def get_player_x(objects):
-    """获取玩家 x 坐标"""
-    player_boxes = objects.get("player", [])
-    if player_boxes:
-        box = player_boxes[0]
-        return (box[0] + box[2]) / 2
-    return 0
 
 def main():
     print("=" * 60)
     print("Contra 视觉环境测试")
     print("=" * 60)
 
+    # 尝试加载模型
+    model = load_model()
+    use_model = model is not None
+    mode_text = "模型推理" if use_model else "随机动作"
+
     # 创建奖励配置
     reward_config = RewardConfig(
-        kill_mob=1.0,
-        kill_turret=1.5,
-        hit_boss_weakness=5.0,
-        kill_boss=10.0,
-        dodge_bullet=0.3,
-        pickup_item=2.0,
+        progress_coef=1.0,
+        progress_penalty=-0.3,
+        no_progress_penalty=-0.1,
+        new_max_bonus=0.5,
+        score_coef=0.1,
+        death_penalty=-2.0,
+        survival_bonus=0.005,
     )
 
-    # 创建环境
+    # 创建环境（frame_stack=4 与训练保持一致）
     print("\n创建环境...")
-    env = ContraVisionEnv(
-        yolo_model_path=YOLO_MODEL_PATH,
-        reward_config=reward_config,
-        frame_stack=1,
-    )
+    env = ContraEnv(frame_stack=4, reward_config=reward_config, render_mode="human")
 
     print(f"观察空间: {env.observation_space}")
     print(f"动作空间: {env.action_space} ({env.action_space.n} 个动作)")
 
-    print("\n按 'q' 退出, 'r' 重置, 空格暂停")
-    print("方向键控制移动, 'z' 射击, 'x' 跳跃\n")
+    print(f"\n按 'q' 退出, 'r' 重置, 空格暂停")
+    print(f"当前模式: {mode_text}\n")
 
     # 重置环境
     obs, info = env.reset()
@@ -95,77 +78,71 @@ def main():
     fps = 30
     frame_time = 1.0 / fps
 
-    # 简单的动作映射
-    # Discrete(36) 动作空间
-    # 0: 无操作
-    # 其他动作需要根据实际游戏测试
-
     while running:
         start_time = time.time()
 
         if not paused:
-            # 随机动作（演示用）
-            action = env.action_space.sample()
+            # 动作选择：有模型则推理，否则随机
+            if use_model:
+                action, _ = model.predict(obs, deterministic=True)
+            else:
+                action = env.action_space.sample()
 
             # 执行动作
             obs, reward, done, truncated, info = env.step(action)
             total_reward += reward
             step_count += 1
 
-            # 获取原始画面（从 retro 环境）
+            # 获取原始画面
             raw_frame = env.prev_frame_raw.copy()
 
-            # 绘制检测结果
-            total_detected = 0
-            if hasattr(env, 'prev_objects'):
-                raw_frame, total_detected = draw_detections(raw_frame, env.prev_objects, env.class_ids)
+            # 读取 RAM 变量
+            xscroll = info.get('xscroll', 0)
+            score = info.get('score', 0)
+            lives = info.get('lives', 'N/A')
+            player_state = info.get('player_state', 0)
 
-            # 获取玩家 x 坐标
-            player_x = get_player_x(env.prev_objects) if hasattr(env, 'prev_objects') else 0
-
-            # 显示信息
-            info_text = [
+            # 在左上角显示 RAM 变量信息
+            ram_info = [
                 f"Step: {step_count}",
-                f"Reward: {total_reward:.2f}",
-                f"Lives: {info.get('lives', 'N/A')}",
-                f"Kills: {info.get('total_kills', 0)}",
-                f"Player X: {player_x:.0f}",
-                f"Detected: {total_detected}",
+                f"Total Reward: {total_reward:.2f}",
+                f"Step Reward: {reward:+.3f}",
+                f"xscroll: {xscroll}",
+                f"score: {score}",
+                f"lives: {lives}",
+                f"player_state: {player_state}",
+                f"max_xscroll: {info.get('max_xscroll', 0)}",
             ]
 
-            for i, text in enumerate(info_text):
-                cv2.putText(raw_frame, text, (10, 20 + i * 20),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-            # 显示检测到的对象数量
-            object_counts = info.get('object_counts', {})
-            if object_counts:
-                y_offset = 160
-                count_text = []
-                for name, count in object_counts.items():
-                    if count > 0:
-                        count_text.append(f"{name}:{count}")
-                if count_text:
-                    cv2.putText(raw_frame, " | ".join(count_text[:5]), (10, y_offset),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            for i, text in enumerate(ram_info):
+                cv2.putText(raw_frame, text, (5, 14 + i * 16),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 0), 1)
 
             # 显示奖励详情
             reward_details = info.get('reward_details', {})
             if reward_details:
-                y_offset = 180
+                y_offset = 14 + len(ram_info) * 16 + 4
+                cv2.putText(raw_frame, "Reward Details:", (5, y_offset),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1)
+                y_offset += 14
                 for key, value in reward_details.items():
                     if value != 0:
-                        text = f"{key}: {value:+.2f}"
+                        text = f"  {key}: {value:+.3f}"
                         color = (0, 255, 0) if value > 0 else (0, 0, 255)
-                        cv2.putText(raw_frame, text, (10, y_offset),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                        y_offset += 15
+                        cv2.putText(raw_frame, text, (5, y_offset),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+                        y_offset += 13
+
+            # 在右上角显示当前模式
+            mode_color = (0, 255, 128) if use_model else (255, 128, 0)
+            cv2.putText(raw_frame, mode_text, (raw_width - 80, 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, mode_color, 1)
 
             # 放大画面
             display_frame = cv2.resize(raw_frame,
                                        (raw_width * DISPLAY_SCALE, raw_height * DISPLAY_SCALE))
 
-            # 显示画面
+            # 显示画面（retro 返回 RGB，需转 BGR 给 OpenCV）
             cv2.imshow("Contra - Press 'q' to quit", cv2.cvtColor(display_frame, cv2.COLOR_RGB2BGR))
 
             if done or truncated:
@@ -197,6 +174,7 @@ def main():
     env.close()
     cv2.destroyAllWindows()
     print("\n测试结束")
+
 
 if __name__ == "__main__":
     main()
